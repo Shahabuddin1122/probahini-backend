@@ -1,0 +1,5 @@
+langchain~=0.3.27
+fastapi~=0.116.1
+langdetect~=1.0.9
+pydantic~=2.11.7
+python-dotenv~=1.1.1
