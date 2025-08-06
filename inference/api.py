@@ -40,7 +40,7 @@ def build_vector_db(request: VectorDBRequest):
 
     documents = []
     for file in files:
-        loader = TextLoader(str(file))
+        loader = TextLoader(str(file), encoding='utf-8')
         loaded_docs = loader.load()
         for doc in loaded_docs:
             chunks = splitter.split_text(doc.page_content)

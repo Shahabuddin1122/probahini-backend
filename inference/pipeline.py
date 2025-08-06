@@ -1,17 +1,18 @@
+import re
+from typing import Dict, Tuple, List
+
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 from inference.predictor import get_llm
 from preprocess.language_detector import detect_language
 
-import re
-
 # Global cache
 _embedder = None
-_vectordb_cache = {}
-_qa_chain_cache = {}
-_chat_history = {}
+_vectordb_cache: Dict[str, any] = {}
+_qa_chain_cache: Dict[str, RetrievalQA] = {}
+_chat_history: Dict[str, List[Tuple[str, str]]] = {}
 
-# Prompt Template (reused)
+# Base prompt template
 template = """You are a knowledgeable assistant helping with menstrual health education.
 
 Use the following context and chat history to answer the question. Be factual, clear, concise, and respond in the same language as the question.
@@ -22,23 +23,59 @@ Context:
 Question: {question}
 
 Helpful Answer:"""
+
 prompt = PromptTemplate(input_variables=["context", "question"], template=template)
 
 
 def clean_response(raw_result: str) -> str:
+    """Clean unnecessary tags from response."""
     return re.sub(r"<think>.*?</think>", "", raw_result, flags=re.DOTALL).strip()
 
 
-def format_chat_history(history: list[tuple[str, str]]) -> str:
-    return "\n\n".join([f"Q: {q}\nA: {a}" for q, a in history[-3:]])  # last 3 rounds
+def format_chat_history(history: List[Tuple[str, str]]) -> str:
+    """Format the last 3 chat history items into a string."""
+    return "\n\n".join([f"Q: {q}\nA: {a}" for q, a in history[-3:]])
+
+
+def preload_resources(languages: List[str]) -> None:
+    global _embedder, _vectordb_cache, _qa_chain_cache
+
+    from vector_store.embedder import get_embedder
+    from vector_store.retriever import get_vectordb
+
+    _embedder = get_embedder()
+    llm = get_llm()
+
+    for lang in languages:
+        vectordb = get_vectordb(lang)
+        _vectordb_cache[lang] = vectordb
+
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            retriever=vectordb.as_retriever(search_kwargs={"k": 4}),
+            chain_type="stuff",
+            chain_type_kwargs={"prompt": prompt},
+            return_source_documents=True
+        )
+        _qa_chain_cache[lang] = qa_chain
+
+        try:
+            qa_chain.invoke("Hello")
+        except Exception as e:
+            print(f"Warm-up failed for language '{lang}': {e}")
+
+    print("Resources Loading completed and warmed up")
 
 
 def run_rag_pipeline(query: str, user_id: str) -> dict:
+    """
+    Main function to handle RAG-based question answering with contextual chat history.
+    """
     global _embedder, _vectordb_cache, _qa_chain_cache, _chat_history
 
     language = detect_language(query)
 
-    # Load components
+    # If this is the first time we are handling this language, load it
     if language not in _vectordb_cache:
         from vector_store.embedder import get_embedder
         from vector_store.retriever import get_vectordb
@@ -57,7 +94,7 @@ def run_rag_pipeline(query: str, user_id: str) -> dict:
         )
         _qa_chain_cache[language] = qa_chain
 
-    # Get chat history
+    # Retrieve chat history and format
     user_history = _chat_history.get(user_id, [])
     history_context = format_chat_history(user_history)
 
@@ -70,14 +107,15 @@ def run_rag_pipeline(query: str, user_id: str) -> dict:
         )
     )
 
-    # Swap prompt in chain
+    # Swap prompt in the QA chain
     qa_chain = _qa_chain_cache[language]
     qa_chain.combine_documents_chain.llm_chain.prompt = contextual_prompt
 
+    # Run the query
     response = qa_chain.invoke(query)
     result = clean_response(response.get("result", ""))
 
-    # Update chat history
+    # Save response in history
     _chat_history.setdefault(user_id, []).append((query, result))
 
     return {
