@@ -1,125 +1,118 @@
 import re
-from typing import Dict, Tuple, List
+import os
+from typing import Dict, List, Tuple
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+from langchain_core.prompts import PromptTemplate
+from langchain.vectorstores import Chroma
+from vector_store.embedder import get_embedder
+from config.constants import PERSIST_DIRECTORY, COLLECTION_NAME
 
-from langchain.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
-from inference.predictor import get_llm
-from preprocess.language_detector import detect_language
-
-# Global cache
-_embedder = None
-_vectordb_cache: Dict[str, any] = {}
-_qa_chain_cache: Dict[str, RetrievalQA] = {}
-_chat_history: Dict[str, List[Tuple[str, str]]] = {}
-
-# Base prompt template
-template = """You are a knowledgeable assistant helping with menstrual health education.
-
-Use the following context and chat history to answer the question. Be factual, clear, concise, and respond in the same language as the question.
-
-Context:
-{context}
-
-Question: {question}
-
-Helpful Answer:"""
-
-prompt = PromptTemplate(input_variables=["context", "question"], template=template)
+load_dotenv()
 
 
-def clean_response(raw_result: str) -> str:
-    """Clean unnecessary tags from response."""
-    return re.sub(r"<think>.*?</think>", "", raw_result, flags=re.DOTALL).strip()
-
-
-def format_chat_history(history: List[Tuple[str, str]]) -> str:
-    """Format the last 3 chat history items into a string."""
-    return "\n\n".join([f"Q: {q}\nA: {a}" for q, a in history[-3:]])
-
-
-def preload_resources(languages: List[str]) -> None:
-    global _embedder, _vectordb_cache, _qa_chain_cache
-
-    from vector_store.embedder import get_embedder
-    from vector_store.retriever import get_vectordb
-
-    _embedder = get_embedder()
-    llm = get_llm()
-
-    for lang in languages:
-        vectordb = get_vectordb(lang)
-        _vectordb_cache[lang] = vectordb
-
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            retriever=vectordb.as_retriever(search_kwargs={"k": 4}),
-            chain_type="stuff",
-            chain_type_kwargs={"prompt": prompt},
-            return_source_documents=True
+class MenstrualHealthRAG:
+    def __init__(self):
+        self.llm = ChatGroq(
+            temperature=0,
+            groq_api_key=os.getenv('GROQ_API_KEY'),
+            model_name=os.getenv('GROQ_MODEL', 'llama3-8b-8192')
         )
-        _qa_chain_cache[lang] = qa_chain
+        self.embedder = get_embedder()  # Initialize embedder once
+        self.chat_history: Dict[str, List[Tuple[str, str]]] = {}
+
+        # Cache for vector stores
+        self.vectordb_cache: Dict[str, Chroma] = {}
+
+    def _get_vectordb(self, language: str) -> Chroma:
+        """Get or create Chroma vector store for a language with caching"""
+        # Standardize language input to match how the vector DB was built
+        lang = language.lower()
+        if lang not in ["bangla", "english"]:
+            lang = "english"  # default to english if unknown language
+
+        if lang not in self.vectordb_cache:
+            persist_dir = f"{PERSIST_DIRECTORY}/{COLLECTION_NAME}_{lang}"
+            collection_name = f"{lang}_chunks"  # matches the naming in build_vector_db
+
+            print(persist_dir)
+            # Verify the vector store exists
+            if not os.path.exists(persist_dir):
+                raise ValueError(f"Vector database for language '{lang}' not found at {persist_dir}. "
+                               "Please build it first using the /build-vectordb endpoint.")
+
+            self.vectordb_cache[lang] = Chroma(
+                embedding_function=self.embedder,
+                collection_name=collection_name,
+                persist_directory=persist_dir
+            )
+        return self.vectordb_cache[lang]
+
+    def _clean_response(self, raw_result: str) -> str:
+        """Remove unwanted tags like <think> from the model's output."""
+        return re.sub(r"<think>.*?</think>", "", raw_result, flags=re.DOTALL).strip()
+
+    def _format_history(self, history: List[Tuple[str, str]]) -> str:
+        """Format last 3 chat history entries."""
+        return "\n".join([f"User: {q}\nAssistant: {a}" for q, a in history[-3:]])
+
+    def get_response(self, query: str, user_id: str) -> dict:
+        """Main entry point: retrieve docs, build prompt, run LLM, update history."""
+        # Detect language (using your existing function)
+        from preprocess.language_detector import detect_language
+        language = detect_language(query)
 
         try:
-            qa_chain.invoke("Hello")
-        except Exception as e:
-            print(f"Warm-up failed for language '{lang}': {e}")
+            # Get vector store
+            vectordb = self._get_vectordb(language)
 
-    print("Resources Loading completed and warmed up")
+            # Retrieve relevant documents
+            retriever = vectordb.as_retriever(search_kwargs={"k": 3})
+            docs = retriever.get_relevant_documents(query)
+            context = "\n".join([doc.page_content for doc in docs])
 
+            # Get user chat history
+            user_history = self.chat_history.get(user_id, [])
+            history_context = self._format_history(user_history)
 
-def run_rag_pipeline(query: str, user_id: str) -> dict:
-    """
-    Main function to handle RAG-based question answering with contextual chat history.
-    """
-    global _embedder, _vectordb_cache, _qa_chain_cache, _chat_history
+            # Build and run prompt
+            template = """You are a knowledgeable assistant helping with menstrual health education.
 
-    language = detect_language(query)
+    Context:
+    {context}
 
-    # If this is the first time we are handling this language, load it
-    if language not in _vectordb_cache:
-        from vector_store.embedder import get_embedder
-        from vector_store.retriever import get_vectordb
+    Chat History:
+    {history}
 
-        _embedder = _embedder or get_embedder()
-        vectordb = get_vectordb(language)
-        _vectordb_cache[language] = vectordb
+    Question: {question}
 
-        llm = get_llm()
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            retriever=vectordb.as_retriever(search_kwargs={"k": 4}),
-            chain_type="stuff",
-            chain_type_kwargs={"prompt": prompt},
-            return_source_documents=True
-        )
-        _qa_chain_cache[language] = qa_chain
+    Answer concisely and factually in the same language as the question."""
 
-    # Retrieve chat history and format
-    user_history = _chat_history.get(user_id, [])
-    history_context = format_chat_history(user_history)
+            prompt = PromptTemplate.from_template(template)
+            chain = prompt | self.llm
 
-    # Inject chat history into the prompt dynamically
-    contextual_prompt = PromptTemplate(
-        input_variables=["context", "question"],
-        template=template.replace(
-            "Context:",
-            f"Chat History:\n{history_context}\n\nContext:" if history_context else "Context:"
-        )
-    )
+            response = chain.invoke({
+                'context': context,
+                'history': history_context,
+                'question': query
+            })
+            cleaned_response = self._clean_response(response.content)
 
-    # Swap prompt in the QA chain
-    qa_chain = _qa_chain_cache[language]
-    qa_chain.combine_documents_chain.llm_chain.prompt = contextual_prompt
+            # Update history (limit to last 5 exchanges)
+            self.chat_history.setdefault(user_id, []).append((query, cleaned_response))
+            if len(self.chat_history[user_id]) > 5:
+                self.chat_history[user_id] = self.chat_history[user_id][-5:]
 
-    # Run the query
-    response = qa_chain.invoke(query)
-    result = clean_response(response.get("result", ""))
+            return {
+                "query": query,
+                "language": language,
+                "response": cleaned_response
+            }
 
-    # Save response in history
-    _chat_history.setdefault(user_id, []).append((query, result))
-
-    return {
-        "query": query,
-        "language": language,
-        "response": result
-    }
+        except ValueError as e:
+            # Handle case where vector DB doesn't exist
+            return {
+                "query": query,
+                "language": language,
+                "response": f"Sorry, the knowledge base for {language} is not available yet."
+            }

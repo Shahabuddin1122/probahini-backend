@@ -4,12 +4,13 @@ from pathlib import Path
 from langchain.document_loaders import TextLoader
 
 from config.constants import PERSIST_DIRECTORY, COLLECTION_NAME
-from inference.pipeline import run_rag_pipeline
+from inference.pipeline import MenstrualHealthRAG
 from splitter.text_splitter import get_markdown_splitter
 from vector_store.embedder import get_embedder
 from vector_store.store import build_vector_store
 
 router = APIRouter()
+rag_instance = MenstrualHealthRAG()
 
 
 class VectorDBRequest(BaseModel):
@@ -55,7 +56,7 @@ def build_vector_db(request: VectorDBRequest):
     return {
         "message": f"Stored {len(documents)} chunks into ChromaDB at '{persist_dir}'",
         "chunks_stored": len(documents),
-        "path": persist_dir
+        "path": persist_dir  ## db_menstrual_health/menstrual_health_chunks_english
     }
 
 
@@ -66,7 +67,7 @@ def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
     try:
-        response = run_rag_pipeline(query, request.user_id)
+        response = rag_instance.get_response(query=query, user_id=request.user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during inference: {str(e)}")
 
