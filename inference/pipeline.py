@@ -35,7 +35,6 @@ class MenstrualHealthRAG:
             persist_dir = f"{PERSIST_DIRECTORY}/{COLLECTION_NAME}_{lang}"
             collection_name = f"{lang}_chunks"  # matches the naming in build_vector_db
 
-            print(persist_dir)
             # Verify the vector store exists
             if not os.path.exists(persist_dir):
                 raise ValueError(f"Vector database for language '{lang}' not found at {persist_dir}. "
@@ -76,17 +75,24 @@ class MenstrualHealthRAG:
             history_context = self._format_history(user_history)
 
             # Build and run prompt
-            template = """You are a knowledgeable assistant helping with menstrual health education.
+            template = """You are an expert assistant specializing in menstrual health education, dedicated to providing accurate, empathetic, and accessible information.
 
-    Context:
-    {context}
+            Context:
+            {context}
 
-    Chat History:
-    {history}
+            Chat History:
+            {history}
 
-    Question: {question}
+            User Question: {question}
 
-    Answer concisely and factually in the same language as the question."""
+            Instructions:
+            - Respond in the same language as the question, using clear, concise, and simple language.
+            - Provide factual, evidence-based answers, avoiding complex medical terminology unless essential.
+            - Address sensitive topics with empathy, discretion, and cultural sensitivity.
+            - Focus solely on answering the question directly without greetings, offers for further assistance, or prompts for additional questions.
+            - If the query is unclear, do not ask for clarification; provide the most relevant information based on the context.
+            - Offer practical, relevant suggestions or resources when appropriate, keeping them concise.
+            - Do not provide medical diagnoses or personalized medical advice; recommend consulting a healthcare professional for specific health concerns."""
 
             prompt = PromptTemplate.from_template(template)
             chain = prompt | self.llm
