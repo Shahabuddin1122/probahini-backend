@@ -47,9 +47,20 @@ class MenstrualHealthRAG:
             )
         return self.vectordb_cache[lang]
 
-    def _clean_response(self, raw_result: str) -> str:
-        """Remove unwanted tags like <think> from the model's output."""
-        return re.sub(r"<think>.*?</think>", "", raw_result, flags=re.DOTALL).strip()
+    def _clean_response(self, raw_result: str, query: str = None) -> str:
+        """Remove unwanted tags, conversational fillers, and exact queries with associated punctuation from the
+        model's output."""
+        # Remove <think> tags
+        cleaned = re.sub(r"<think>.*?</think>", "", raw_result, flags=re.DOTALL)
+        # Remove Bangla conversational fillers
+        cleaned = re.sub(r"আমি বলতে পারি\s*", "", cleaned, flags=re.UNICODE)
+        # Remove exact query with associated punctuation (if query is provided)
+        if query:
+            # Escape special regex characters in the query to match it exactly
+            escaped_query = re.escape(query)
+            # Match query followed by optional punctuation (e.g., :, ?, !, .) and optional whitespace
+            cleaned = re.sub(rf"\b{escaped_query}\s*[?:!.]?\s*", "", cleaned, flags=re.UNICODE)
+        return cleaned.strip()
 
     def _format_history(self, history: List[Tuple[str, str]]) -> str:
         """Format last 3 chat history entries."""
@@ -86,13 +97,17 @@ class MenstrualHealthRAG:
             User Question: {question}
 
             Instructions:
-            - Respond in the same language as the question, using clear, concise, and simple language.
-            - Provide factual, evidence-based answers, avoiding complex medical terminology unless essential.
+            - Respond in the same language as the question strictly, using clear, concise, and simple language suitable for mobile devices.
+            - Keep responses short (under 100 words) and focused, avoiding unnecessary details.
+            - Provide factual, evidence-based answers, avoiding complex medical terminology.
             - Address sensitive topics with empathy, discretion, and cultural sensitivity.
-            - Focus solely on answering the question directly without greetings, offers for further assistance, or prompts for additional questions.
-            - If the query is unclear, do not ask for clarification; provide the most relevant information based on the context.
-            - Offer practical, relevant suggestions or resources when appropriate, keeping them concise.
-            - Do not provide medical diagnoses or personalized medical advice; recommend consulting a healthcare professional for specific health concerns."""
+            - Never repeat or rephrase the user's question in the response.
+            - If the query is unclear, provide the most relevant information based on the context.
+            - Offer concise, practical suggestions when appropriate.
+            - Do not provide medical diagnoses; recommend consulting a healthcare professional for specific concerns.
+            - Avoid conversational fillers or introductory phrases like 'আমি বলতে পারি' in Bangla responses; provide only the direct, relevant answer.
+            - Do not Include the question in the response.
+            """
 
             prompt = PromptTemplate.from_template(template)
             chain = prompt | self.llm
@@ -102,7 +117,7 @@ class MenstrualHealthRAG:
                 'history': history_context,
                 'question': query
             })
-            cleaned_response = self._clean_response(response.content)
+            cleaned_response = self._clean_response(response.content, query=query)
 
             # Update history (limit to last 5 exchanges)
             self.chat_history.setdefault(user_id, []).append((query, cleaned_response))

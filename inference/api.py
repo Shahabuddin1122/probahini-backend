@@ -56,7 +56,7 @@ def build_vector_db(request: VectorDBRequest):
     return {
         "message": f"Stored {len(documents)} chunks into ChromaDB at '{persist_dir}'",
         "chunks_stored": len(documents),
-        "path": persist_dir  ## db_menstrual_health/menstrual_health_chunks_english
+        "path": persist_dir
     }
 
 
