@@ -16,7 +16,7 @@ class MenstrualHealthRAG:
         self.llm = ChatGroq(
             temperature=0,
             groq_api_key=os.getenv('GROQ_API_KEY'),
-            model_name=os.getenv('GROQ_MODEL', 'llama3-8b-8192')
+            model_name=os.getenv('GROQ_MODEL', 'llama-3.1-8b-instant')
         )
         self.embedder = get_embedder()  # Initialize embedder once
         self.chat_history: Dict[str, List[Tuple[str, str]]] = {}
